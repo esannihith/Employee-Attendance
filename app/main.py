@@ -69,9 +69,13 @@ class PunchInIn(BaseModel):
 # --------------------------------------------------------------------------- #
 # Endpoints provided
 # --------------------------------------------------------------------------- #
-@app.get("/health")
+@app.get("/health", status_code = 200)
 def health():
-    return {"status": "ok"}
+    try:
+        client.admin.command("ping")
+        return {"status": "ok"}
+    except Exception:
+        raise HTTPException(503, "MongoDB is not reachable")
 
 
 @app.post("/employees", status_code=201)

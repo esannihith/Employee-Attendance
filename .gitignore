@@ -1,2 +1,26 @@
-.env
+# Byte-compiled / optimized files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environments
 venv/
+.venv/
+env/
+ENV/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Testing and Coverage
+.pytest_cache/
+.coverage
+htmlcov/

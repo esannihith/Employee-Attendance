@@ -11,6 +11,7 @@ openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from decimal import Decimal, ROUND_HALF_UP
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
@@ -38,7 +39,8 @@ def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
 
 
 def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
-    return round((punch_out - punch_in).total_seconds() / 3600, 2)
+    seconds = int((punch_out - punch_in).total_seconds())
+    return float(Decimal(seconds) / Decimal(3600)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
 
 def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:

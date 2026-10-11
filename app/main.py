@@ -8,6 +8,7 @@ This file was written quickly by a colleague who has left the company. The happy
 works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expected of you,
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
+from pymongo.errors import DuplicateKeyError
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -20,7 +21,7 @@ from pymongo import MongoClient
 
 load_dotenv()
 
-client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"))
+client = MongoClient(os.getenv("MONGO_URI", "mongodb://localhost:27017"), tz_aware=True)
 db = client[os.getenv("MONGO_DB", "attendance_db")]
 
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -86,12 +87,19 @@ def health():
 
 @app.post("/employees", status_code=201)
 def create_employee(body: EmployeeIn):
+    if body.shift_start == body.shift_end:
+        raise HTTPException(422, "shift_start and shift_end cannot be same")
     if db.employees.find_one({"emp_code": body.emp_code}):
         raise HTTPException(409, "emp_code already exists")
     doc = body.model_dump()
-    doc["created_at"] = datetime.now()
-    db.employees.insert_one(doc)
+    created_at = datetime.now(timezone.utc)
+    doc["created_at"] = created_at
+    try:
+        db.employees.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "emp_code already exists")
     doc.pop("_id", None)
+    doc["created_at"] =  int(created_at.timestamp() * 1000)
     return doc
 
 
@@ -100,9 +108,12 @@ def list_employees(department: Optional[str] = None, page: int = 1, page_size: i
     q = {}
     if department:
         q["department"] = department
-    skip = page * page_size
-    total = db.employees.count_documents({})
-    items = list(db.employees.find(q, {"_id": 0}).skip(skip).limit(page_size))
+    skip = (page - 1)* page_size
+    total = db.employees.count_documents(q)
+    items = list(db.employees.find(q, {"_id": 0}).sort("emp_code").skip(skip).limit(page_size))
+    for item in items:
+        if isinstance(item.get("created_at"), datetime):
+            item["created_at"] = int(item["created_at"].timestamp() * 1000)
     return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 

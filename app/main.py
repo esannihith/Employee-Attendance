@@ -8,15 +8,16 @@ This file was written quickly by a colleague who has left the company. The happy
 works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expected of you,
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
+from contextlib import asynccontextmanager
 from pymongo.errors import DuplicateKeyError
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Optional, Annotated
 from decimal import Decimal, ROUND_HALF_UP
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, Query
+from pydantic import BaseModel, Field
 from pymongo import MongoClient
 
 load_dotenv()
@@ -26,7 +27,17 @@ db = client[os.getenv("MONGO_DB", "attendance_db")]
 
 IST = timezone(timedelta(hours=5, minutes=30))
 
-app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    db.employees.create_index([("emp_code", 1)], unique=True)
+    db.employees.create_index([("department", 1), ("emp_code", 1)])
+    db.attendance_logs.create_index([("emp_code", 1), ("date", 1)], unique=True)
+    db.attendance_logs.create_index([("date", -1), ("emp_code", 1)])
+    
+    yield
+    client.close()
+    
+app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0", lifespan=lifespan)
 
 
 # --------------------------------------------------------------------------- #
@@ -84,18 +95,18 @@ def serialize_attendance(doc: dict) -> dict:
 # Models
 # --------------------------------------------------------------------------- #
 class EmployeeIn(BaseModel):
-    emp_code: str
-    name: str
-    email: str
-    department: str
-    shift_start: str = "09:30"
-    shift_end: str = "18:30"
-    joined_on: str
+    emp_code: str = Field(pattern=r"^EMP\d{4,6}$")
+    name: str = Field(min_length=1, max_length=100)
+    email: str = Field(max_length=120, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+    department: str = Field(min_length=1, max_length=50)
+    shift_start: str = Field(default="09:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    shift_end: str = Field(default="18:30", pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    joined_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
 class PunchInIn(BaseModel):
     emp_code: str
-    punched_at: Optional[int] = None
+    punched_at: Optional[int] = Field(default=None, ge=100_000_000_000, le=4_102_444_800_000)
     status: str = "PRESENT"
 
 
@@ -130,7 +141,11 @@ def create_employee(body: EmployeeIn):
 
 
 @app.get("/employees")
-def list_employees(department: Optional[str] = None, page: int = 1, page_size: int = 20):
+def list_employees(
+    department: Optional[str] = None,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
+):
     q = {}
     if department:
         q["department"] = department
@@ -197,8 +212,8 @@ def list_attendance(
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     status: Optional[str] = None,
-    page: int = 1,
-    page_size: int = 20,
+    page: Annotated[int, Query(ge=1)] = 1,
+    page_size: Annotated[int, Query(ge=1, le=100)] = 20,
 ):
     q = {}
     if emp_code:

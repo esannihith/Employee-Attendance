@@ -14,3 +14,6 @@ List every defect you found in the starter `app/main.py` (helpers and endpoints)
 | 8 | GET /attendance | Memory scalability flaw loading entire collection, missing secondary sort, date_from > date_to not returning 422, leaked id, unconverted datetimes in record and history changes | Contract crosscheck & performance on large datasets | Used MongoDB compound sorting and cursor pagination, enforced 422 date validation, created serialize_attendance helper for epoch millisecond conversions | 
 
 Also note anything you looked at and decided was **not** a defect, and why.
+- **IST Timezone Definition:** `timezone(timedelta(hours=5, minutes=30))` is standard and correctly models UTC+05:30 as specified by Rule R1.
+- **BSON Date Storage in UTC:** Verified that storing UTC datetimes in MongoDB while converting to epoch milliseconds at the API boundary is the required data contract.
+- **Database Connection Lifecycle:** Using environment variables for URI and DB with local defaults matches the environment contract.

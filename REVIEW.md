@@ -10,5 +10,6 @@ List every defect you found in the starter `app/main.py` (helpers and endpoints)
 | 4 | compute_overtime | The function fails for night shift | Crosscheck with rules R1, R3 | Added check for night shift and corrected the overtime calculation |
 | 5 | GET /employees | Pagination issue, date item, filter not passed | Contract crosscheck | Fixed pagination, pass the query to filter, converted return created_at to milliseconds | 
 | 6 | POST /employees | Concurrency Race Condition, created_at contract mismatch, identical shift and start end time not handled | Contract crosscheck | Added error handling for race condition, check for identical shift and start end time, fixed created_at |
+| 7 | POST /attendance/punch-in | Logic issue, night shift employee not handled, timezone | Contract crosscheck | Added check for night shift and timezone | 
 
 Also note anything you looked at and decided was **not** a defect, and why.

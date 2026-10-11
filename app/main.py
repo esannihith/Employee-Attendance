@@ -32,9 +32,12 @@ app = FastAPI(title="Employee Attendance & Analytics API", version="2.0.0")
 # --------------------------------------------------------------------------- #
 # Helpers
 # --------------------------------------------------------------------------- #
-def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
+def compute_late_minutes(punch_in: datetime, shift_start: str, shift_end: Optional[str] = None) -> int:
     h, m = map(int, shift_start.split(":"))
-    start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
+    if shift_end and shift_end <= shift_start and punch_in.strftime("%H:%M") < shift_end:
+        start = (punch_in - timedelta(days=1)).replace(hour=h, minute=m, second=0, microsecond=0)
+    else:
+        start = punch_in.replace(hour=h, minute=m, second=0, microsecond=0)
     seconds = int((punch_in - start).total_seconds())
     return seconds // 60 if seconds > 600 else 0
 
@@ -119,26 +122,51 @@ def list_employees(department: Optional[str] = None, page: int = 1, page_size: i
 
 @app.post("/attendance/punch-in", status_code=201)
 def punch_in(body: PunchInIn):
+    if body.punched_at is not None:
+        if body.punched_at < 100_000_000_000 or body.punched_at > 4_102_444_800_000:
+            raise HTTPException(422, "punched_at must be epoch milliseconds")
+
     emp = db.employees.find_one({"emp_code": body.emp_code})
-    ts = datetime.fromtimestamp(body.punched_at / 1000) if body.punched_at else datetime.now()
-    d = ts.date().isoformat()
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+
+    status = body.status
+    if status not in ("PRESENT", "WFH", "ON_DUTY"):
+        raise HTTPException(422, "Invalid status for punch-in")
+
+    if body.punched_at:
+        ts = datetime.fromtimestamp(body.punched_at / 1000, tz=timezone.utc).replace(microsecond=0)
+    else:
+        ts = datetime.now(timezone.utc).replace(microsecond=0)
+
+    ts_ist = ts.astimezone(IST)
+    if emp["shift_end"] <= emp["shift_start"] and ts_ist.strftime("%H:%M") < emp["shift_end"]:
+        d = (ts_ist - timedelta(days=1)).date().isoformat()
+    else:
+        d = ts_ist.date().isoformat()
+
     if db.attendance_logs.find_one({"emp_code": body.emp_code, "date": d}):
         raise HTTPException(409, "already punched in for this date")
+
     doc = {
         "emp_code": body.emp_code,
         "date": d,
-        "status": body.status,
+        "status": status,
         "punch_in": ts,
         "punch_out": None,
         "work_hours": None,
-        "late_minutes": compute_late_minutes(ts, emp["shift_start"]),
+        "late_minutes": compute_late_minutes(ts_ist, emp["shift_start"], emp["shift_end"]),
         "overtime_minutes": 0,
         "half_day": False,
         "history": [],
     }
-    res = db.attendance_logs.insert_one(doc)
-    doc["id"] = str(res.inserted_id)
+    try:
+        db.attendance_logs.insert_one(doc)
+    except DuplicateKeyError:
+        raise HTTPException(409, "already punched in for this date")
+
     doc.pop("_id", None)
+    doc["punch_in"] = int(ts.timestamp() * 1000)
     return doc
 
 

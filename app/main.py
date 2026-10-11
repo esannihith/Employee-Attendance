@@ -54,7 +54,30 @@ def compute_overtime(punch_out: datetime, shift_start : str, shift_end: str, dat
     if shift_end <= shift_start:
         end += timedelta(days=1)
     minutes = int((punch_out - end).total_seconds()) // 60
-    return minutes if minutes >= 30 else 0 
+    return minutes if minutes >= 30 else 0
+
+
+def serialize_attendance(doc: dict) -> dict:
+    doc.pop("_id", None)
+    doc.pop("id", None)
+    doc.setdefault("half_day", False)
+    doc.setdefault("history", [])
+    doc.setdefault("late_minutes", 0)
+    doc.setdefault("overtime_minutes", 0)
+    if isinstance(doc.get("punch_in"), datetime):
+        doc["punch_in"] = int(doc["punch_in"].timestamp() * 1000)
+    if isinstance(doc.get("punch_out"), datetime):
+        doc["punch_out"] = int(doc["punch_out"].timestamp() * 1000)
+    for h in doc.get("history", []):
+        if isinstance(h.get("at"), datetime):
+            h["at"] = int(h["at"].timestamp() * 1000)
+        for change in h.get("changes", {}).values():
+            if isinstance(change, dict):
+                if isinstance(change.get("from"), datetime):
+                    change["from"] = int(change["from"].timestamp() * 1000)
+                if isinstance(change.get("to"), datetime):
+                    change["to"] = int(change["to"].timestamp() * 1000)
+    return doc 
 
 
 # --------------------------------------------------------------------------- #
@@ -165,9 +188,7 @@ def punch_in(body: PunchInIn):
     except DuplicateKeyError:
         raise HTTPException(409, "already punched in for this date")
 
-    doc.pop("_id", None)
-    doc["punch_in"] = int(ts.timestamp() * 1000)
-    return doc
+    return serialize_attendance(doc)
 
 
 @app.get("/attendance")
@@ -190,13 +211,15 @@ def list_attendance(
             q["date"]["$lte"] = date_to
     if status:
         q["status"] = status
-    docs = list(db.attendance_logs.find(q))
-    docs.sort(key=lambda d: d["date"], reverse=True)
-    total = len(docs)
-    page_docs = docs[(page - 1) * page_size : page * page_size]
-    for d in page_docs:
-        d["id"] = str(d.pop("_id"))
-    return {"items": page_docs, "total": total, "page": page, "page_size": page_size}
+    
+    if date_from and date_to and date_from > date_to:
+        raise HTTPException(422, "Unprocessable Entity")
+         
+    skip = (page - 1) * page_size
+    total = db.attendance_logs.count_documents(q)
+    docs = list(db.attendance_logs.find(q).sort([("date", -1), ("emp_code", 1)]).skip(skip).limit(page_size))
+    items = [serialize_attendance(d) for d in docs]
+    return {"items": items, "total": total, "page": page, "page_size": page_size}
 
 
 # --------------------------------------------------------------------------- #

@@ -40,13 +40,17 @@ def compute_late_minutes(punch_in: datetime, shift_start: str) -> int:
 
 def compute_work_hours(punch_in: datetime, punch_out: datetime) -> float:
     seconds = int((punch_out - punch_in).total_seconds())
-    return float(Decimal(seconds) / Decimal(3600)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    hours = Decimal(seconds) / Decimal(3600)
+    return float(hours.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
 
 
-def compute_overtime(punch_out: datetime, shift_end: str, date_str: str) -> int:
+def compute_overtime(punch_out: datetime, shift_start : str, shift_end: str, date_str: str) -> int:
     h, m = map(int, shift_end.split(":"))
     end = datetime.fromisoformat(date_str).replace(hour=h, minute=m, tzinfo=IST)
-    return max(0, int((punch_out - end).total_seconds() / 60))
+    if shift_end <= shift_start:
+        end += timedelta(days=1)
+    minutes = int((punch_out - end).total_seconds()) // 60
+    return minutes if minutes >= 30 else 0 
 
 
 # --------------------------------------------------------------------------- #

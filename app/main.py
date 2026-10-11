@@ -8,18 +8,17 @@ This file was written quickly by a colleague who has left the company. The happy
 works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expected of you,
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
-from pymongo import ReturnDocument
 from contextlib import asynccontextmanager
 from pymongo.errors import DuplicateKeyError
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Annotated
+from typing import Optional, Annotated, Literal
 from decimal import Decimal, ROUND_HALF_UP
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel, Field
-from pymongo import MongoClient
+from pymongo import MongoClient, ReturnDocument
 
 load_dotenv()
 
@@ -113,7 +112,14 @@ class PunchInRequest(BaseModel):
 class PunchOutRequest(BaseModel):
     emp_code: str
     punched_at: Optional[int] = Field(default=None, ge=100_000_000_000, le=4_102_444_800_000)
-    
+
+class RegularizeRequest(BaseModel):
+    reason: str = Field(min_length=5, max_length=200)
+    regularized_by: str = Field(min_length=1, max_length=50)
+    status: Optional[Literal["PRESENT", "ABSENT", "LEAVE", "WFH", "ON_DUTY"]] = None
+    punch_in: Optional[int] = Field(default=None, ge=100_000_000_000, le=4_102_444_800_000)
+    punch_out: Optional[int] = Field(default=None, ge=100_000_000_000, le=4_102_444_800_000)
+
 # --------------------------------------------------------------------------- #
 # Endpoints provided
 # --------------------------------------------------------------------------- #
@@ -296,15 +302,112 @@ def punch_out(body: PunchOutRequest):
 
     return serialize_attendance(updated_record)
 
+@app.patch("/attendance/{emp_code}/{date}", status_code=200)
+def update_attendance(emp_code: str, date: str, body: RegularizeRequest):
+    emp = db.employees.find_one({"emp_code": emp_code})
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
 
-        
+    record = db.attendance_logs.find_one({"emp_code": emp_code, "date": date})
+    if record is None:
+        raise HTTPException(404, "Attendance record not found")
 
-    
+    new_status = body.status or record["status"]
 
-    
-    
+    if new_status in ("ABSENT", "LEAVE"):
+        if body.punch_in is not None or body.punch_out is not None:
+            raise HTTPException(422, "Punch times cannot be set for ABSENT or LEAVE")
+        target = {
+            "status": new_status,
+            "punch_in": None,
+            "punch_out": None,
+            "work_hours": None,
+            "late_minutes": 0,
+            "overtime_minutes": 0,
+            "half_day": False,
+        }
+    else:
+        # Presence status
+        p_in = (
+            datetime.fromtimestamp(body.punch_in / 1000, tz=timezone.utc).replace(microsecond=0)
+            if body.punch_in is not None
+            else record.get("punch_in")
+        )
+        if p_in is None:
+            raise HTTPException(422, "Presence status requires punch_in")
+
+        # R1 attendance date check
+        p_in_ist = p_in.astimezone(IST)
+        if emp["shift_end"] <= emp["shift_start"] and p_in_ist.strftime("%H:%M") < emp["shift_end"]:
+            derived_date = (p_in_ist - timedelta(days=1)).date().isoformat()
+        else:
+            derived_date = p_in_ist.date().isoformat()
+        if derived_date != date:
+            raise HTTPException(422, "punch_in must stay on the record's attendance date")
+
+        p_out = (
+            datetime.fromtimestamp(body.punch_out / 1000, tz=timezone.utc).replace(microsecond=0)
+            if body.punch_out is not None
+            else record.get("punch_out")
+        )
+        if p_out is not None:
+            if p_out <= p_in or (p_out - p_in).total_seconds() > 86400:
+                raise HTTPException(422, "punch_out must be after punch_in and within 24 hours")
+            work_hours = compute_work_hours(p_in, p_out)
+            overtime = compute_overtime(p_out, emp["shift_start"], emp["shift_end"], date)
+            half_day = work_hours < 4.5
+        else:
+            work_hours = None
+            overtime = 0
+            half_day = False
+
+        target = {
+            "status": new_status,
+            "punch_in": p_in,
+            "punch_out": p_out,
+            "work_hours": work_hours,
+            "late_minutes": compute_late_minutes(p_in_ist, emp["shift_start"], emp["shift_end"]),
+            "overtime_minutes": overtime,
+            "half_day": half_day,
+        }
+
+    # Compare tracked fields with legacy fallback defaults
+    defaults = {"late_minutes": 0, "overtime_minutes": 0, "half_day": False}
+    changes = {}
+    for k, v in target.items():
+        old_val = record.get(k, defaults.get(k))
+        if isinstance(old_val, datetime):
+            old_val = old_val.replace(microsecond=0)
+        if old_val != v:
+            changes[k] = {"from": old_val, "to": v}
+
+    if not changes:
+        raise HTTPException(422, "Request changes nothing")
+
+    old_history = record.get("history") or []
+    history_entry = {
+        "at": datetime.now(timezone.utc).replace(microsecond=0),
+        "by": body.regularized_by,
+        "reason": body.reason,
+        "changes": changes,
+    }
+
+    updated = db.attendance_logs.find_one_and_update(
+        {
+            "emp_code": emp_code,
+            "date": date,
+            f"history.{len(old_history)}": {"$exists": False},
+        },
+        {
+            "$set": target,
+            "$push": {"history": history_entry},
+        },
+        return_document=ReturnDocument.AFTER,
+    )
+    if updated is None:
+        raise HTTPException(409, "Concurrent modification conflict")
+
+    return serialize_attendance(updated)
 
 
 
-    
-    

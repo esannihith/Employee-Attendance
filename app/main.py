@@ -8,6 +8,7 @@ This file was written quickly by a colleague who has left the company. The happy
 works, but nobody has reviewed it. Read PROBLEM_STATEMENT.docx for what is expected of you,
 openapi.yaml for the contract and DATA_MODEL.md for what is stored in MongoDB.
 """
+from pymongo import ReturnDocument
 from contextlib import asynccontextmanager
 from pymongo.errors import DuplicateKeyError
 import os
@@ -104,12 +105,15 @@ class EmployeeIn(BaseModel):
     joined_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
 
 
-class PunchInIn(BaseModel):
+class PunchInRequest(BaseModel):
     emp_code: str
     punched_at: Optional[int] = Field(default=None, ge=100_000_000_000, le=4_102_444_800_000)
     status: str = "PRESENT"
 
-
+class PunchOutRequest(BaseModel):
+    emp_code: str
+    punched_at: Optional[int] = Field(default=None, ge=100_000_000_000, le=4_102_444_800_000)
+    
 # --------------------------------------------------------------------------- #
 # Endpoints provided
 # --------------------------------------------------------------------------- #
@@ -159,11 +163,7 @@ def list_employees(
 
 
 @app.post("/attendance/punch-in", status_code=201)
-def punch_in(body: PunchInIn):
-    if body.punched_at is not None:
-        if body.punched_at < 100_000_000_000 or body.punched_at > 4_102_444_800_000:
-            raise HTTPException(422, "punched_at must be epoch milliseconds")
-
+def punch_in(body: PunchInRequest):
     emp = db.employees.find_one({"emp_code": body.emp_code})
     if emp is None:
         raise HTTPException(404, "Employee not found")
@@ -247,3 +247,64 @@ def list_attendance(
 #   GET   /analytics/departments/{department}/trend
 #   GET   /admin/explain/{endpoint}
 # --------------------------------------------------------------------------- #
+
+@app.post("/attendance/punch-out",status_code = 200)
+def punch_out(body: PunchOutRequest):
+    emp = db.employees.find_one({"emp_code": body.emp_code})
+    if emp is None:
+        raise HTTPException(404, "Employee not found")
+    if body.punched_at is not None:
+        punch_out = datetime.fromtimestamp(body.punched_at / 1000, tz=timezone.utc).replace(microsecond = 0)
+    else:
+        punch_out = datetime.now(timezone.utc).replace(microsecond=0)
+        
+    record = db.attendance_logs.find_one({
+        "emp_code": body.emp_code,
+        "punch_in": {"$lte" : punch_out}},
+        sort=[("punch_in", -1)])
+
+    if record is None:
+        raise HTTPException(404,"No punch-in found")
+    
+    if record.get("punch_out") is not None:
+        raise HTTPException(409, "already punched out")
+
+    punched_in = record.get("punch_in")
+    date_str = record.get("date")
+    
+    if punched_in >= punch_out or (punch_out - punched_in).total_seconds() > 86400:
+        raise HTTPException(422, "Unprocessable Entity")
+    
+    work_hours = compute_work_hours(punched_in, punch_out)
+    overtime_minutes = compute_overtime(punch_out, emp["shift_start"], emp["shift_end"], date_str)
+    half_day = True if work_hours < 4.5 else False
+    
+    updated_record = db.attendance_logs.find_one_and_update(
+        {"_id" : record["_id"], "punch_out": None},
+        {"$set" : {
+            "punch_out" : punch_out,
+            "work_hours": work_hours,
+            "overtime_minutes": overtime_minutes,
+            "half_day": half_day
+            }
+        },
+        return_document=ReturnDocument.AFTER
+    )
+
+    if updated_record is None:
+        raise HTTPException(409, "Already punched out")
+
+    return serialize_attendance(updated_record)
+
+
+        
+
+    
+
+    
+    
+
+
+
+    
+    
